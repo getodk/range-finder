@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="instructions_line1">To use, hold this at arm's length.</string>
+    <string name="instructions_line2">Close right eye and line up object</string>
+    <string name="instructions_line3">here, then close left eye and position</string>
+    <string name="instructions_line4">red line to line up with object.</string>
+    <string name="meter_abbr">m</string>
+    <string name="centimeter_abbr">cm</string>
+    <string name="feet_abbr">f</string>
+    <string name="inch_abbr">in</string>
+    <string name="done_button">Done</string>
+    <string name="infinity">\u221E</string>
+    <string name="app_name">Range Finder</string>
+    <string name="set_preferences">Set RangeFinder Preferences</string>
+    <string name="preferences_units">Measurement Units</string>
+    <string name="units_metric">Metric</string>
+    <string name="units_imperial">Imperial</string>
+    <string name="arm_length">Arm Length</string>
+    <string name="eye_separation">Eye Separation</string>
+    <string name="menu_preferences">Edit Preferences</string>
+    <string name="menu_help">Help</string>
+    <string name="menu_exit">Close</string>
+    <string name="help_title">Help on RangeFinder</string>
+    <string name="preferences_prompt">Preferences must be entered before use</string>
+    <string name="preferences_prompt_agree">Go to Preferences</string>
+    <string name="preferences_prompt_cancel">Exit</string>
+</resources>
