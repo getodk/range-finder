@@ -17,15 +17,19 @@
 
 package org.odk.rangefinder;
 
-import android.app.Activity;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Paint.Align;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.graphics.Paint.Align;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -43,19 +47,23 @@ import java.text.NumberFormat;
  */
 public class RangeCard extends View {
    
-  private Activity activity;
+  public static final int NO_MEASUREMENT = Integer.MIN_VALUE;
+  
+  private RangeFinder activity;
   private Resources resource;
+  private InclinationReader inclinationReader;
   private float armlength = 0.60f;  // meters
   private float eyesep = 0.07f;  // meters
   private float xdpi = 0;
-  private float xdpm = 0;  // dots per meter...
-  private boolean imperial = false;
+  private float xdpm = 0;  // dots per meter, in x dimension...
+  private boolean imperial = false;  // Display feet or meters.
   
   // Used to display estimate distance to user
   private int userPixel = 40;
   private float userDist = 0;
   private String userDistStr = "";
   private float userDistAccuracy = 0;
+  private int inclinationAtLastAdjustment = NO_MEASUREMENT;
 
   private boolean inited = false;
 
@@ -65,11 +73,11 @@ public class RangeCard extends View {
   private Path arrowLeft;
   private Path arrowRight;
   private long debounceTime = 0;
-  private static final long DEBOUNCE_THRESH = 500;  // milliseconds
+  private static final long DEBOUNCE_THRESH = 300;  // milliseconds
   
   // Some default measurements to show on the card.
   private static final float [] GOOD_IMPERIAL_DISTS = 
-    {4, 6, 8, 12, 16, 24, 48};  // feet
+    {3, 4, 6, 8, 12, 24, 60};  // feet
   private static final float [] GOOD_METRIC_DISTS = 
     {1, 1.5f, 2, 3, 5, 10, 20};  // meters
   
@@ -80,13 +88,14 @@ public class RangeCard extends View {
   private static final NumberFormat numberFormat0 = 
     NumberFormat.getIntegerInstance();
   
-  public RangeCard(Activity activity, float xdpi) {
+  public RangeCard(RangeFinder activity, float xdpi) {
     super(activity);
     setFocusable(true);
     this.xdpi = xdpi;
     this.xdpm = xdpi * 39.3700787f;  // inches to meters
     this.activity = activity;
     resource = activity.getResources();
+    inclinationReader = new InclinationReader(activity);
   }
     
   /**
@@ -120,7 +129,8 @@ public class RangeCard extends View {
     buttonRight = new RectF(w - buttonw - 30, h - buttonh - 50,
         w - 30, h - 50);
     
-    // This is for a right arrow centered at 0,0... invert x for left arrow
+    // This is for a right arrow centered at 0,0... invert x for left arrow.
+    // Note this isn't scaled with the button, but it looks OK that way.
     float [] arrowPoints = {-30, -10, 5, -10,
                             5, -20, 30, 0,
                             5, 20, 5, 10, -30, 10};
@@ -192,6 +202,14 @@ public class RangeCard extends View {
     canvas.drawLine(userPixel + 1, 0, userPixel + 6, 10, paint);  // arrow end
     canvas.drawText(userDistStr, userPixel - 10, 200, paint);
 
+    if (inclinationReader.isSupported()) {
+      paint.setColor(Color.YELLOW);
+      canvas.drawText(resource.getString(R.string.inclination_label) + 
+          inclinationReader.getInclination() + 
+          resource.getString(R.string.units_degrees),
+          10, buttonDone.centerY(), paint);
+    }
+    
     drawButtons(canvas);
     // Just for fun, draw a ruler on the other edge
     drawRuler(canvas);
@@ -219,7 +237,7 @@ public class RangeCard extends View {
   
   /**
    * Solves the distance based on user settings.
-   * @return false parameters are not set
+   * @return false if parameters are not set
    */
   public boolean solveUserDist() {
     if (xdpm == 0 || eyesep == 0 || armlength == 0) {
@@ -228,18 +246,23 @@ public class RangeCard extends View {
     float userDisp = userPixel / xdpm;
     userDist = eyesep * armlength / (eyesep - userDisp);
     // Method to determine accuracy... 
-    // How much change in 2 pixels would change displacement?
-    // This could be something smarter...
-    float userDispAcc = (userPixel + 2) / xdpm;
-    if (userDispAcc >= eyesep) {
-      userDispAcc = (userPixel - 2) / xdpm;
-      userDistAccuracy = userDist - (eyesep * armlength 
-          / (eyesep - userDispAcc));
-    } else {
-      userDistAccuracy = (eyesep * armlength 
-          / (eyesep - userDispAcc)) - userDist;
+    // How much change would 1/4 mm in displacement change distance?
+    // This is about around 2 pixels on normal dpi range devices.
+    // Go this amount on either side of user value and then average difference.
+    // This could still be something smarter...
+    float delta = 0.00025f;
+    float acc1 = (eyesep * armlength 
+        / (eyesep - (userDisp + delta))) - userDist;
+    float acc2 = userDist - (eyesep * armlength
+        / (eyesep - (userDisp - delta)));
+    userDistAccuracy = (acc1 + acc2)/2;
+    // Accuracy could be as bad as infinity, which isn't very useful, so cap
+    // it at 100% error.  Negative means some kind of error, so cap that too.
+    if (userDistAccuracy > userDist || userDistAccuracy < 0) {
+      System.out.println("acc is "+userDistAccuracy);
+      userDistAccuracy = userDist;
     }
-    // Number format accuracy of as appropriate...  Could be smarter about 
+    // Number format accuracy as appropriate...  Could be smarter about 
     // formatting based on imperial/metric, but doesn't really matter.
     NumberFormat numberFormat = numberFormat3;
     if (userDistAccuracy > 1) {
@@ -324,14 +347,14 @@ public class RangeCard extends View {
       }
     }
     userPixel += incr;
-    this.invalidate();
+    handleUserPixelChanged();
     return true;
   }
   
   @Override
   public boolean onTouchEvent(MotionEvent evt) {
     // Implement basic debouncing to avoid unnecessary multiple triggering.
-    // Will only trigger once in first 500ms, and then will act like key
+    // Will only trigger once in first 300ms, and then will act like key
     // repeat.  So you can touch and hold on left/right buttons to move more.
     boolean isDebounced = false;
     if (evt.getAction() == MotionEvent.ACTION_DOWN) {
@@ -344,30 +367,97 @@ public class RangeCard extends View {
     // Otherwise count it as a button press.
     if (evt.getY() < buttonDone.top - 10) {
       userPixel = (int) evt.getX();
+      handleUserPixelChanged();
     } else if (isDebounced && buttonLeft.contains(evt.getX(), evt.getY())) {
       userPixel -= 1;
+      handleUserPixelChanged();
     } else if (isDebounced && buttonRight.contains(evt.getX(), evt.getY())) {
       userPixel += 1;
+      handleUserPixelChanged();
     } else if (isDebounced && buttonDone.contains(evt.getX(), evt.getY())) {
       activity.finish();
     }
-    this.invalidate();
     return true;
   }
   
   @Override
   public boolean onKeyDown(int keyCode, KeyEvent event) {
     // Handle keypad left/right to move userPixel (red line).
+    boolean adjusted = false;
     if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
       userPixel -= 1;
-      this.invalidate();
-      return true;
+      adjusted = true;
     } 
     if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
       userPixel += 1;
-      this.invalidate();
+      adjusted = true;
+    }
+    if (adjusted) {
+      handleUserPixelChanged();
       return true;
     }
     return false;
+  }
+  
+  /**
+   * Cap the values of user pixel to screen size and set inclination reading,
+   * and redraw.
+   */
+  private void handleUserPixelChanged() {
+    if (userPixel < 0) {
+      userPixel = 0;
+    }
+    if (userPixel > getWidth()) {
+      userPixel = getWidth();
+    }
+    if (inclinationReader.isSupported()) {
+      inclinationAtLastAdjustment = inclinationReader.getInclination();
+    }
+    this.invalidate();
+  }
+  
+  public int getInclinationAtLastAdjustment() {
+    return inclinationAtLastAdjustment;
+  }
+  
+  public class InclinationReader implements SensorEventListener {
+
+    private boolean supported = false;
+    private SensorManager sensorMgr;
+    private double inclination;
+    // TODO: possibly provide some calibration.
+    
+    public InclinationReader(Context c) {
+      sensorMgr = (SensorManager) c.getSystemService(Context.SENSOR_SERVICE);
+      Sensor sensor = sensorMgr.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+      if (sensor != null) {
+        supported = sensorMgr.registerListener(this, sensor,
+            SensorManager.SENSOR_DELAY_NORMAL);  // Relatively low update rate.
+      }
+    }
+
+    public boolean isSupported() {
+      return supported;
+    }
+    
+    public int getInclination() {
+      return (int)Math.toDegrees(inclination);
+    }
+    
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+      // Measure angle between z (up) and the x-y plane.
+      float x = event.values[0];
+      float y = event.values[1];
+      float z = event.values[2];
+      double magnitude = Math.sqrt(x * x + y * y + z * z);
+      // Invert this because want straight up to be 90, down -90.
+      inclination = - Math.asin(z / magnitude);
+      invalidate();  // Redraw.
+    }
   }
 }
